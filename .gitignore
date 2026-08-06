@@ -1,0 +1,43 @@
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# Raw and processed data
+data/raw/
+data/processed/
+
+# Generated artifacts
+artifacts/
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Model files
+*.pkl
+*.joblib
+*.bin
+*.json
+
+# OS
+.DS_Store
+Thumbs.db
