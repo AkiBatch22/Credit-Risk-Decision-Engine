@@ -1,207 +1,120 @@
+"""Deterministic, target-independent application feature engineering."""
+
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 
+from src.components.feature_contract import PRODUCTION_ENGINEERED_FEATURES
 
-def create_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Create engineered credit-risk features from Home Credit applicant data.
+BENCHMARK_ONLY_ENGINEERED_FEATURES = (
+    "EXT_SOURCE_MEAN",
+    "EXT_SOURCE_MIN",
+    "EXT_SOURCE_MAX",
+    "EXT_SOURCE_STD",
+    "EXT_SOURCE_COUNT",
+    "DOCUMENT_COUNT",
+    "CONTACT_COUNT",
+    "DEF_30_SOCIAL_RATIO",
+    "DEF_60_SOCIAL_RATIO",
+)
+ENGINEERED_FEATURES = PRODUCTION_ENGINEERED_FEATURES
 
-    The function returns a copy of the input dataframe with additional
-    features and does not mutate the original dataframe.
-    """
 
-    df = df.copy()
+def _series(dataframe: pd.DataFrame, column: str) -> pd.Series:
+    if column in dataframe:
+        return pd.to_numeric(dataframe[column], errors="coerce")
+    return pd.Series(np.nan, index=dataframe.index, dtype=float, name=column)
 
-    # ---------------------------------------------------------
-    # Employment anomaly handling
-    # ---------------------------------------------------------
 
-    df["DAYS_EMPLOYED_ANOMALY"] = (
-        df["DAYS_EMPLOYED"] == 365243
-    ).astype(int)
+def _safe_divide(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    result = numerator.div(denominator.where(denominator.ne(0)))
+    return result.replace([np.inf, -np.inf], np.nan)
 
-    df["DAYS_EMPLOYED_CLEAN"] = (
-        df["DAYS_EMPLOYED"]
-        .replace(365243, np.nan)
+
+def create_deployable_features(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Create only reproducible, target-independent production features."""
+
+    result = dataframe.copy(deep=True)
+    days_employed = _series(result, "DAYS_EMPLOYED")
+    result["DAYS_EMPLOYED_ANOMALY"] = days_employed.eq(365243).astype(float).where(days_employed.notna())
+    result["DAYS_EMPLOYED_CLEAN"] = days_employed.replace(365243, np.nan)
+
+    result["AGE_YEARS"] = -_series(result, "DAYS_BIRTH") / 365.25
+    result["EMPLOYMENT_YEARS"] = -result["DAYS_EMPLOYED_CLEAN"] / 365.25
+    result["EMPLOYMENT_AGE_RATIO"] = _safe_divide(
+        result["EMPLOYMENT_YEARS"], result["AGE_YEARS"]
     )
 
-    # ---------------------------------------------------------
-    # Applicant age and employment history
-    # ---------------------------------------------------------
+    income = _series(result, "AMT_INCOME_TOTAL")
+    credit = _series(result, "AMT_CREDIT")
+    annuity = _series(result, "AMT_ANNUITY")
+    goods_price = _series(result, "AMT_GOODS_PRICE")
+    family_members = _series(result, "CNT_FAM_MEMBERS")
+    children = _series(result, "CNT_CHILDREN")
 
-    df["AGE_YEARS"] = (
-        -df["DAYS_BIRTH"] / 365.25
+    result["CREDIT_INCOME_RATIO"] = _safe_divide(credit, income)
+    result["ANNUITY_INCOME_RATIO"] = _safe_divide(annuity, income)
+    result["CREDIT_ANNUITY_RATIO"] = _safe_divide(credit, annuity)
+    result["CREDIT_GOODS_RATIO"] = _safe_divide(credit, goods_price)
+    result["INCOME_PER_PERSON"] = _safe_divide(income, family_members)
+    result["CREDIT_PER_PERSON"] = _safe_divide(credit, family_members)
+    result["ANNUITY_PER_PERSON"] = _safe_divide(annuity, family_members)
+    result["CHILDREN_FAMILY_RATIO"] = _safe_divide(children, family_members)
+
+    return result.replace([np.inf, -np.inf], np.nan)
+
+
+def create_benchmark_features(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Add research-only features whose sources are unavailable in deployment."""
+
+    result = create_deployable_features(dataframe)
+    external = pd.DataFrame(
+        {column: _series(result, column) for column in ("EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3")},
+        index=result.index,
     )
+    result["EXT_SOURCE_MEAN"] = external.mean(axis=1)
+    result["EXT_SOURCE_MIN"] = external.min(axis=1)
+    result["EXT_SOURCE_MAX"] = external.max(axis=1)
+    result["EXT_SOURCE_STD"] = external.std(axis=1)
+    result["EXT_SOURCE_COUNT"] = external.notna().sum(axis=1)
 
-    df["EMPLOYMENT_YEARS"] = (
-        -df["DAYS_EMPLOYED_CLEAN"] / 365.25
+    document_columns = [column for column in result if column.startswith("FLAG_DOCUMENT_")]
+    result["DOCUMENT_COUNT"] = (
+        result[document_columns].apply(pd.to_numeric, errors="coerce").sum(axis=1, min_count=1)
+        if document_columns
+        else np.nan
     )
-
-    df["EMPLOYMENT_AGE_RATIO"] = (
-        df["EMPLOYMENT_YEARS"]
-        / df["AGE_YEARS"]
-    )
-
-    # ---------------------------------------------------------
-    # Credit affordability features
-    # ---------------------------------------------------------
-
-    df["CREDIT_INCOME_RATIO"] = (
-        df["AMT_CREDIT"]
-        / df["AMT_INCOME_TOTAL"]
-    )
-
-    df["ANNUITY_INCOME_RATIO"] = (
-        df["AMT_ANNUITY"]
-        / df["AMT_INCOME_TOTAL"]
-    )
-
-    df["CREDIT_ANNUITY_RATIO"] = (
-        df["AMT_CREDIT"]
-        / df["AMT_ANNUITY"]
-    )
-
-    df["CREDIT_GOODS_RATIO"] = (
-        df["AMT_CREDIT"]
-        / df["AMT_GOODS_PRICE"]
-    )
-
-    # ---------------------------------------------------------
-    # Household affordability features
-    # ---------------------------------------------------------
-
-    df["INCOME_PER_PERSON"] = (
-        df["AMT_INCOME_TOTAL"]
-        / df["CNT_FAM_MEMBERS"]
-    )
-
-    df["CREDIT_PER_PERSON"] = (
-        df["AMT_CREDIT"]
-        / df["CNT_FAM_MEMBERS"]
-    )
-
-    df["ANNUITY_PER_PERSON"] = (
-        df["AMT_ANNUITY"]
-        / df["CNT_FAM_MEMBERS"]
-    )
-
-    df["CHILDREN_FAMILY_RATIO"] = (
-        df["CNT_CHILDREN"]
-        / df["CNT_FAM_MEMBERS"]
-    )
-
-    # ---------------------------------------------------------
-    # External credit-score features
-    # ---------------------------------------------------------
-
-    external_columns = [
-        "EXT_SOURCE_1",
-        "EXT_SOURCE_2",
-        "EXT_SOURCE_3",
-    ]
-
-    df["EXT_SOURCE_MEAN"] = (
-        df[external_columns]
-        .mean(axis=1)
-    )
-
-    df["EXT_SOURCE_MIN"] = (
-        df[external_columns]
-        .min(axis=1)
-    )
-
-    df["EXT_SOURCE_MAX"] = (
-        df[external_columns]
-        .max(axis=1)
-    )
-
-    df["EXT_SOURCE_STD"] = (
-        df[external_columns]
-        .std(axis=1)
-    )
-
-    df["EXT_SOURCE_COUNT"] = (
-        df[external_columns]
-        .notna()
-        .sum(axis=1)
-    )
-
-    # ---------------------------------------------------------
-    # Document features
-    # ---------------------------------------------------------
-
-    document_columns = [
-        column
-        for column in df.columns
-        if column.startswith("FLAG_DOCUMENT_")
-    ]
-
-    if document_columns:
-        df["DOCUMENT_COUNT"] = (
-            df[document_columns]
-            .sum(axis=1)
-        )
-    else:
-        df["DOCUMENT_COUNT"] = 0
-
-    # ---------------------------------------------------------
-    # Contact-information features
-    # ---------------------------------------------------------
-
     contact_columns = [
-        "FLAG_MOBIL",
-        "FLAG_EMP_PHONE",
-        "FLAG_WORK_PHONE",
-        "FLAG_CONT_MOBILE",
-        "FLAG_PHONE",
-        "FLAG_EMAIL",
-    ]
-
-    available_contact_columns = [
         column
-        for column in contact_columns
-        if column in df.columns
+        for column in (
+            "FLAG_MOBIL",
+            "FLAG_EMP_PHONE",
+            "FLAG_WORK_PHONE",
+            "FLAG_CONT_MOBILE",
+            "FLAG_PHONE",
+            "FLAG_EMAIL",
+        )
+        if column in result
     ]
-
-    if available_contact_columns:
-        df["CONTACT_COUNT"] = (
-            df[available_contact_columns]
-            .sum(axis=1)
-        )
-    else:
-        df["CONTACT_COUNT"] = 0
-
-    # ---------------------------------------------------------
-    # Social-circle risk features
-    # ---------------------------------------------------------
-
-    if {
-        "DEF_30_CNT_SOCIAL_CIRCLE",
-        "OBS_30_CNT_SOCIAL_CIRCLE",
-    }.issubset(df.columns):
-
-        df["DEF_30_SOCIAL_RATIO"] = (
-            df["DEF_30_CNT_SOCIAL_CIRCLE"]
-            / df["OBS_30_CNT_SOCIAL_CIRCLE"]
-        )
-
-    if {
-        "DEF_60_CNT_SOCIAL_CIRCLE",
-        "OBS_60_CNT_SOCIAL_CIRCLE",
-    }.issubset(df.columns):
-
-        df["DEF_60_SOCIAL_RATIO"] = (
-            df["DEF_60_CNT_SOCIAL_CIRCLE"]
-            / df["OBS_60_CNT_SOCIAL_CIRCLE"]
-        )
-
-    # ---------------------------------------------------------
-    # Clean division edge cases
-    # ---------------------------------------------------------
-
-    df = df.replace(
-        [np.inf, -np.inf],
-        np.nan,
+    result["CONTACT_COUNT"] = (
+        result[contact_columns].apply(pd.to_numeric, errors="coerce").sum(axis=1, min_count=1)
+        if contact_columns
+        else np.nan
     )
 
-    return df
+    result["DEF_30_SOCIAL_RATIO"] = _safe_divide(
+        _series(result, "DEF_30_CNT_SOCIAL_CIRCLE"),
+        _series(result, "OBS_30_CNT_SOCIAL_CIRCLE"),
+    )
+    result["DEF_60_SOCIAL_RATIO"] = _safe_divide(
+        _series(result, "DEF_60_CNT_SOCIAL_CIRCLE"),
+        _series(result, "OBS_60_CNT_SOCIAL_CIRCLE"),
+    )
+    return result.replace([np.inf, -np.inf], np.nan)
+
+
+def create_features(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Backward-compatible alias for the deployable production transformation."""
+
+    return create_deployable_features(dataframe)

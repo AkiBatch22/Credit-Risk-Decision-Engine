@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "credit-risk-decision-engine"
+version = "1.0.0"
+description = "Leakage-safe probability, expected-loss, and decision-policy prototype for Home Credit data"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "joblib>=1.4,<2.0",
+  "numpy>=1.26,<3.0",
+  "pandas>=2.2,<3.0",
+  "pydantic>=2.8,<3.0",
+  "scikit-learn>=1.5,<2.0",
+  "streamlit>=1.37,<2.0",
+  "uvicorn[standard]>=0.30,<1.0",
+  "xgboost>=2.1,<4.0",
+]
+
+[project.scripts]
+credit-risk-train = "src.pipeline.training_pipeline:main"
+credit-risk-predict = "src.pipeline.prediction_pipeline:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/__init__.py"]

@@ -1,34 +1,22 @@
-import pandas as pd
+from __future__ import annotations
 
-from src.components.data_loader import (
-    load_training_data,
-)
+import pytest
+
+from src.components.data_loader import load_training_data
 
 
-def test_load_training_data(tmp_path):
-
+def test_load_training_data_accepts_path_override(tmp_path, synthetic_applications):
     test_file = tmp_path / "sample.csv"
+    synthetic_applications.to_csv(test_file, index=False)
+    loaded = load_training_data(test_file)
+    assert loaded.shape == synthetic_applications.shape
+    assert {"TARGET", "SK_ID_CURR"}.issubset(loaded.columns)
 
-    sample_data = pd.DataFrame(
-        {
-            "SK_ID_CURR": [100001, 100002],
-            "TARGET": [0, 1],
-            "AMT_INCOME_TOTAL": [
-                100000,
-                150000,
-            ],
-        }
-    )
 
-    sample_data.to_csv(
-        test_file,
-        index=False,
-    )
-
-    df = load_training_data(
-        test_file
-    )
-
-    assert len(df) == 2
-    assert "TARGET" in df.columns
-    assert "SK_ID_CURR" in df.columns
+def test_load_training_data_rejects_missing_and_empty_files(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_training_data(tmp_path / "missing.csv")
+    empty = tmp_path / "empty.csv"
+    empty.touch()
+    with pytest.raises(ValueError, match="empty"):
+        load_training_data(empty)
