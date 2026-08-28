@@ -1,8 +1,9 @@
-"""Deployable feature contract for new credit applications.
+"""Feature contract for the preserved Home Credit ML serving experiment.
 
 The historical Home Credit dataset contains many useful benchmark variables whose
-inference-time source is unavailable here.  This module is the single production
-contract used by training, validation, Streamlit, FastAPI, and prediction.
+inference-time source is unavailable here. This contract remains authoritative for
+the research training/prediction pipeline; the production-facing affordability
+simulator uses ``loan_simulator.py`` and does not use the historical ML model.
 """
 
 from __future__ import annotations

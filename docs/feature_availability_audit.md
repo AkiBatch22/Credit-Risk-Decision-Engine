@@ -1,5 +1,7 @@
 # Feature Availability Audit
 
+> This document audits the preserved Home Credit ML research path. The current Streamlit and FastAPI loan-affordability simulator uses only the values submitted for the current scenario and does not invoke this historical model.
+
 This audit answers the production question: **where does each value come from when a completely new applicant submits an application?** The persisted training metadata also records a classification and inference-source answer for every column found in the training CSV.
 
 ## Deployable applicant-provided fields
