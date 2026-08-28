@@ -1,356 +1,369 @@
-"""Streamlit interface for the deployable credit-risk decision engine."""
+"""Streamlit dashboard for hybrid affordability and repayment-stress simulation."""
 
 from __future__ import annotations
-
-import json
-from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-from src.components.feature_contract import (
-    FEATURE_BY_API_NAME,
-    UNKNOWN_CATEGORY,
-    application_to_model_input,
-    friendly_explanation_name,
+from src.components.loan_simulator import (
+    EMPLOYMENT_TYPES,
+    PRODUCT_POLICIES,
+    LoanApplication,
+    simulate_loan,
 )
-from src.pipeline.prediction_pipeline import PredictionPipeline
+from src.components.repayment_stress import estimate_repayment_stress
 
 
 st.set_page_config(
-    page_title="Credit Risk Decision Engine",
-    page_icon="📊",
+    page_title="Loan Eligibility & Repayment Simulator",
+    page_icon="🏦",
     layout="wide",
 )
 
 
-SAMPLE_APPLICATION: dict[str, Any] = {
-    "age": 34,
-    "years_employed": 5.0,
-    "family_members": 2.0,
-    "number_of_children": 0,
-    "annual_income": 202_500.0,
-    "requested_loan_amount": 406_597.5,
-    "loan_annuity": 24_700.5,
-    "goods_purchase_price": 351_000.0,
-    "credit_product_type": "Cash loans",
-    "income_type": "Working",
-    "housing_situation": "House / apartment",
-    "owns_car": "No",
-    "owns_property": "Yes",
+PRODUCT_LABEL_TO_CODE = {
+    policy.label: code for code, policy in PRODUCT_POLICIES.items()
 }
 
 
-@st.cache_resource(show_spinner=False)
-def load_pipeline() -> PredictionPipeline:
-    """Load fitted deployable artifacts once per Streamlit process."""
-
-    return PredictionPipeline()
+def _money(value: float) -> str:
+    return f"{value:,.2f} units"
 
 
-def build_model_input_from_form(**application_values: Any) -> dict[str, Any]:
-    """Validate and translate human-readable fields to the production model schema."""
-
-    return application_to_model_input(application_values)
-
-
-def predict_applicants(
-    applicants: dict[str, Any] | pd.DataFrame,
-    *,
-    include_explanations: bool,
-) -> pd.DataFrame | None:
-    try:
-        with st.spinner("Loading fitted artifacts and assessing credit risk..."):
-            return load_pipeline().predict(
-                applicants,
-                include_explanations=include_explanations,
-            )
-    except FileNotFoundError:
-        st.error(
-            "Deployable model artifacts were not found. Run the documented full training pipeline "
-            "before starting the application."
+def _status_message(result: dict[str, object]) -> None:
+    status = str(result["eligibility_status"])
+    if status == "ELIGIBLE":
+        st.success(
+            "The requested loan is affordable under the selected illustrative policy and submitted values."
         )
-    except (TypeError, ValueError, json.JSONDecodeError, pd.errors.ParserError) as error:
-        st.error(f"The application could not be processed. Please review the inputs: {error}")
-    except Exception as error:  # pragma: no cover - defensive UI boundary
-        st.error(f"Prediction failed. Check the local artifacts and application schema: {error}")
-    return None
+    elif status == "ELIGIBLE_FOR_LOWER_AMOUNT_OR_DIFFERENT_TERM":
+        st.warning(
+            "The requested structure is not currently affordable, but the submitted values support "
+            "a lower amount or another repayment term."
+        )
+    else:
+        st.error(
+            "The submitted values do not currently satisfy the simulator's basic affordability or "
+            "product criteria. Review the specific actions below."
+        )
 
 
-def render_results(results: pd.DataFrame, source_label: str) -> None:
-    st.header("Assessment Result")
-    st.caption(f"Latest assessment source: {source_label}")
+def render_applicant_dashboard(result: dict[str, object]) -> None:
+    st.subheader("Your Affordability Summary")
+    _status_message(result)
+    st.caption(f"Application ID: {result['application_id']}")
 
-    for _, row in results.iterrows():
-        application_id = str(row["application_id"])
-        with st.container(border=True):
-            st.metric("Application ID", application_id)
-            if "source_record_id" in row and pd.notna(row["source_record_id"]):
-                st.caption(f"Historical source record: {row['source_record_id']}")
+    score_col, eligible_col, emi_col, surplus_col = st.columns(4)
+    score_col.metric(
+        "Financial Readiness Score",
+        f"{result['financial_readiness_score']}/100",
+        help="An input-only affordability score—not a bureau credit score.",
+    )
+    eligible_col.metric(
+        "Maximum Eligible Loan",
+        _money(float(result["maximum_eligible_loan_amount"])),
+    )
+    emi_col.metric(
+        "Maximum Affordable EMI",
+        _money(float(result["maximum_affordable_monthly_emi"])),
+    )
+    surplus_col.metric(
+        "Surplus After Preferred EMI",
+        _money(float(result["post_preferred_emi_monthly_surplus"])),
+    )
+    st.caption(
+        f"Readiness band: {str(result['financial_readiness_band']).replace('_', ' ').title()}. "
+        "This is a transparent financial-readiness indicator calculated only from the submitted values."
+    )
 
-            expected_loss = row.get("expected_loss")
-            expected_loss_text = (
-                "Unavailable"
-                if expected_loss is None or pd.isna(expected_loss)
-                else f"{float(expected_loss):,.2f} dataset currency units"
-            )
-            probability_col, band_col, recommendation_col, loss_col = st.columns(4)
-            probability_col.metric(
-                "Probability of Payment Difficulty",
-                f"{float(row['probability']):.1%}",
-            )
-            band_col.metric("Risk Band", str(row["risk_band"]).replace("_", " ").title())
-            recommendation_col.metric(
-                "Recommendation",
-                str(row["recommendation"]).replace("_", " ").title(),
-            )
-            loss_col.metric("Expected Loss", expected_loss_text)
-
-            missing_count = int(row.get("missing_input_feature_count", 0) or 0)
-            if missing_count:
-                st.caption(
-                    f"{missing_count} optional contract value(s) were not provided and were handled "
-                    "by the fitted preprocessing pipeline."
+    st.markdown("#### Historical repayment-stress estimate")
+    stress = result["repayment_stress"]
+    if not stress["available"]:
+        st.info(str(stress["unavailable_reason"]))
+    else:
+        probability = float(stress["calibrated_payment_difficulty_probability"])
+        probability_col, band_col = st.columns(2)
+        probability_col.metric(
+            "Calibrated Payment-Difficulty Probability",
+            f"{probability:.1%}",
+            help=(
+                "A historical comparison trained on Home Credit outcomes using only fields "
+                "derivable from this form. It is not a bureau score or approval decision."
+            ),
+        )
+        band_col.metric(
+            "Historical Stress Band",
+            str(stress["historical_stress_band"]).replace("_", " ").title(),
+        )
+        st.caption(str(stress["role_in_decision"]))
+        with st.expander("Why the ML estimate moved in this direction"):
+            for reason in stress["reason_codes"]:
+                direction = (
+                    "increased the model estimate"
+                    if reason["direction"] == "increases_stress"
+                    else "reduced the model estimate"
                 )
+                st.markdown(f"- **{reason['label']}** {direction}.")
+            st.caption(
+                "Reason directions are local model contributions before probability calibration; "
+                "they are explanatory, not instructions or adverse-action reasons."
+            )
 
-            reasons = row.get("top_risk_reasons")
-            if isinstance(reasons, list) and reasons:
-                st.markdown("#### Key Risk Drivers")
-                reason_rows = []
-                for reason in reasons:
-                    feature = reason.get("feature", "Feature")
-                    label = friendly_explanation_name(feature)
-                    reason_rows.append(
-                        {
-                            "Risk driver": label,
-                            "Effect on estimated risk": str(
-                                reason.get("direction", "model influence")
-                            ).replace("_", " ").title(),
-                            "Model contribution": f"{float(reason.get('contribution', 0)):+.4f}",
-                        }
-                    )
-                st.dataframe(pd.DataFrame(reason_rows), width="stretch", hide_index=True)
+    st.markdown("#### What you can do next")
+    recommendations = result["recommendations"]
+    if recommendations:
+        for recommendation in recommendations:
+            st.markdown(
+                f"**{recommendation['action']}**  \n{recommendation['detail']}"
+            )
+    else:
+        st.info("No specific recommendation was generated for this scenario.")
+
+    st.markdown("#### Repayment plan comparison")
+    plans = pd.DataFrame(result["repayment_plans"])
+    if plans.empty:
+        st.warning("No repayment term fits the configured maximum age-at-maturity rule.")
+    else:
+        display_plans = plans.rename(
+            columns={
+                "term_months": "Term (months)",
+                "monthly_emi": "Monthly EMI",
+                "total_interest": "Total Interest",
+                "total_repayment": "Total Repayment",
+                "post_emi_monthly_surplus": "Post-EMI Surplus",
+                "total_debt_service_ratio": "Total Debt Ratio",
+                "affordable": "Affordable",
+                "preferred": "Preferred",
+            }
+        )
+        display_plans["Total Debt Ratio"] = display_plans["Total Debt Ratio"].map(
+            lambda value: f"{value:.1%}"
+        )
+        st.dataframe(display_plans, width="stretch", hide_index=True)
+        st.caption(
+            "A shorter term usually reduces total interest but increases the monthly EMI. A longer "
+            "term usually lowers the EMI but increases total interest."
+        )
 
 
-def _spec(api_name: str):
-    return FEATURE_BY_API_NAME[api_name]
+def render_bank_dashboard(result: dict[str, object]) -> None:
+    st.subheader("Decision Insights")
+    st.caption(
+        "This view keeps deterministic affordability checks separate from the optional historical "
+        "ML signal. It is suitable for explaining the simulation, not for making a regulated lending decision."
+    )
+
+    ratio_1, ratio_2, ratio_3, requested = st.columns(4)
+    ratio_1.metric(
+        "Existing Debt-Service Ratio",
+        f"{float(result['current_debt_service_ratio']):.1%}",
+    )
+    ratio_2.metric(
+        "Debt Ratio With Requested Loan",
+        f"{float(result['requested_total_debt_service_ratio']):.1%}",
+    )
+    ratio_3.metric(
+        "Essential Expense Ratio",
+        f"{float(result['essential_expense_ratio']):.1%}",
+    )
+    requested.metric(
+        "Preferred-Plan EMI",
+        _money(float(result["preferred_plan_monthly_emi"])),
+    )
+
+    st.markdown("#### Policy checks")
+    checks = pd.DataFrame(result["policy_checks"])
+    checks["Result"] = checks["passed"].map({True: "PASS", False: "FAIL"})
+    checks = checks.rename(
+        columns={
+            "code": "Rule Code",
+            "label": "Check",
+            "observed": "Observed",
+            "limit": "Policy Limit",
+        }
+    )
+    st.dataframe(
+        checks[["Rule Code", "Check", "Result", "Observed", "Policy Limit"]],
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.markdown("#### Readiness score breakdown")
+    breakdown = pd.DataFrame(
+        {
+            "Component": result["readiness_score_breakdown"].keys(),
+            "Points": result["readiness_score_breakdown"].values(),
+        }
+    )
+    st.bar_chart(breakdown.set_index("Component"))
+
+    stress = result["repayment_stress"]
+    st.markdown("#### ML model card snapshot")
+    if stress["available"]:
+        final_metrics = stress["final_test_metrics"]
+        model_1, model_2, model_3, model_4 = st.columns(4)
+        model_1.metric("Model", str(stress["model_name"]).replace("_", " ").title())
+        model_2.metric("Final-test ROC-AUC", f"{float(final_metrics['roc_auc']):.3f}")
+        model_3.metric("Final-test PR-AUC", f"{float(final_metrics['pr_auc']):.3f}")
+        model_4.metric("Final-test Brier", f"{float(final_metrics['brier_score']):.4f}")
+        st.caption(str(stress["data_scope_note"]))
+    else:
+        st.info(str(stress["unavailable_reason"]))
+
+    assumptions = result["policy_assumptions"]
+    with st.expander("Illustrative product-policy assumptions"):
+        st.json(
+            {
+                "Product": assumptions["label"],
+                "Illustrative annual rate": f"{assumptions['annual_interest_rate_percent']}%",
+                "Maximum total debt-service ratio": (
+                    f"{assumptions['maximum_debt_service_ratio_percent']}%"
+                ),
+                "Minimum residual-income buffer": (
+                    f"{assumptions['minimum_residual_income_ratio_percent']}%"
+                ),
+                "Minimum income stability": (
+                    f"{assumptions['minimum_income_stability_years']} years"
+                ),
+                "Maximum age at maturity": assumptions["maximum_age_at_maturity"],
+                "Maximum product principal": assumptions["maximum_principal"],
+                "Permitted terms": assumptions["permitted_terms_months"],
+            }
+        )
 
 
-st.title("Credit Risk Decision Engine")
+st.title("Loan Eligibility & Repayment Simulator")
 st.markdown(
-    "A deployment-shaped portfolio demonstration using only information that can be collected "
-    "or deterministically derived when a completely new application arrives."
+    "Explore how current income, essential expenses, existing debt, income stability, and loan "
+    "structure affect affordability. The same result is explained from both the applicant and bank perspectives."
 )
 st.warning(
-    "Educational decision-support demo only. It is not suitable for real lending decisions and "
-    "requires human review, fairness testing, legal review, monitoring, and governance."
+    "Educational simulation only. It uses self-declared inputs and illustrative product policies. "
+    "It does not access a credit bureau, calculate an official credit score, verify income, or make a lending decision."
 )
 
-st.header("Applicant Details")
-with st.form("applicant_assessment_form"):
-    st.subheader("Personal Information")
-    personal_1, personal_2 = st.columns(2)
-    age = personal_1.number_input(
-        _spec("age").label,
-        min_value=float(_spec("age").minimum),
-        max_value=float(_spec("age").maximum),
-        value=float(SAMPLE_APPLICATION["age"]),
-        step=float(_spec("age").step),
-        help=_spec("age").help,
+with st.form("loan_simulation_form"):
+    st.subheader("Loan Request")
+    request_1, request_2 = st.columns(2)
+    product_label = request_1.selectbox(
+        "Loan Product",
+        options=list(PRODUCT_LABEL_TO_CODE),
+        help="Choose the type of loan to apply the corresponding illustrative rate, term, and affordability policy.",
     )
-    years_employed = personal_2.number_input(
-        _spec("years_employed").label,
-        min_value=float(_spec("years_employed").minimum),
-        max_value=float(_spec("years_employed").maximum),
-        value=float(SAMPLE_APPLICATION["years_employed"]),
-        step=float(_spec("years_employed").step),
-        help=_spec("years_employed").help,
-    )
-    personal_3, personal_4 = st.columns(2)
-    family_members = personal_3.number_input(
-        _spec("family_members").label,
-        min_value=float(_spec("family_members").minimum),
-        max_value=float(_spec("family_members").maximum),
-        value=float(SAMPLE_APPLICATION["family_members"]),
-        step=float(_spec("family_members").step),
-        help=_spec("family_members").help,
-    )
-    number_of_children = personal_4.number_input(
-        _spec("number_of_children").label,
-        min_value=int(_spec("number_of_children").minimum),
-        max_value=int(_spec("number_of_children").maximum),
-        value=int(SAMPLE_APPLICATION["number_of_children"]),
-        step=int(_spec("number_of_children").step),
-        help=_spec("number_of_children").help,
+    product_code = PRODUCT_LABEL_TO_CODE[product_label]
+    policy = PRODUCT_POLICIES[product_code]
+    requested_loan_amount = request_2.number_input(
+        "Requested Loan Amount",
+        min_value=1.0,
+        max_value=float(policy.maximum_principal * 2),
+        value=min(500_000.0, float(policy.maximum_principal)),
+        step=10_000.0,
+        help="Enter the amount you would like to borrow. Values are shown in neutral currency units.",
     )
 
-    st.subheader("Financial Information")
-    financial_1, financial_2 = st.columns(2)
-    annual_income = financial_1.number_input(
-        _spec("annual_income").label,
-        min_value=float(_spec("annual_income").minimum),
-        max_value=float(_spec("annual_income").maximum),
-        value=float(SAMPLE_APPLICATION["annual_income"]),
-        step=float(_spec("annual_income").step),
-        help=_spec("annual_income").help,
+    applicant_1, applicant_2, applicant_3 = st.columns(3)
+    age = applicant_1.number_input(
+        "Age",
+        min_value=18,
+        max_value=80,
+        value=32,
+        step=1,
+        help="Enter age in completed years. The term must end before the product's maximum maturity age.",
     )
-    requested_loan_amount = financial_2.number_input(
-        _spec("requested_loan_amount").label,
-        min_value=float(_spec("requested_loan_amount").minimum),
-        max_value=float(_spec("requested_loan_amount").maximum),
-        value=float(SAMPLE_APPLICATION["requested_loan_amount"]),
-        step=float(_spec("requested_loan_amount").step),
-        help=_spec("requested_loan_amount").help,
+    employment_type = applicant_2.selectbox(
+        "Income Source",
+        options=EMPLOYMENT_TYPES,
+        help="Select the primary recurring source used to support repayment.",
     )
-    financial_3, financial_4 = st.columns(2)
-    loan_annuity = financial_3.number_input(
-        _spec("loan_annuity").label,
-        min_value=float(_spec("loan_annuity").minimum),
-        max_value=float(_spec("loan_annuity").maximum),
-        value=float(SAMPLE_APPLICATION["loan_annuity"]),
-        step=float(_spec("loan_annuity").step),
-        help=_spec("loan_annuity").help,
-    )
-    goods_purchase_price = financial_4.number_input(
-        _spec("goods_purchase_price").label,
-        min_value=float(_spec("goods_purchase_price").minimum),
-        max_value=float(_spec("goods_purchase_price").maximum),
-        value=float(SAMPLE_APPLICATION["goods_purchase_price"]),
-        step=float(_spec("goods_purchase_price").step),
-        help=_spec("goods_purchase_price").help,
+    income_stability_years = applicant_3.number_input(
+        "Income Stability (years)",
+        min_value=0.0,
+        max_value=60.0,
+        value=4.0,
+        step=0.5,
+        help="Enter how long the current income source has been continuous or stable.",
     )
 
-    st.subheader("Application Information")
-    application_1, application_2, application_3 = st.columns(3)
-    credit_product_type = application_1.selectbox(
-        _spec("credit_product_type").label,
-        options=list(_spec("credit_product_type").allowed_values),
-        help=_spec("credit_product_type").help,
+    st.subheader("Monthly Cash Flow")
+    cash_1, cash_2, cash_3 = st.columns(3)
+    monthly_net_income = cash_1.number_input(
+        "Monthly Net Income",
+        min_value=1.0,
+        value=100_000.0,
+        step=1_000.0,
+        help="Enter recurring take-home income after tax and mandatory deductions.",
     )
-    income_type = application_2.selectbox(
-        _spec("income_type").label,
-        options=[*_spec("income_type").allowed_values, UNKNOWN_CATEGORY],
-        index=list(_spec("income_type").allowed_values).index(SAMPLE_APPLICATION["income_type"]),
-        help=_spec("income_type").help,
+    monthly_essential_expenses = cash_2.number_input(
+        "Monthly Essential Expenses",
+        min_value=0.0,
+        value=40_000.0,
+        step=1_000.0,
+        help="Include housing, food, utilities, transport, dependants, and other recurring essentials. Exclude existing loan payments entered separately.",
     )
-    housing_situation = application_3.selectbox(
-        _spec("housing_situation").label,
-        options=[*_spec("housing_situation").allowed_values, UNKNOWN_CATEGORY],
-        index=list(_spec("housing_situation").allowed_values).index(
-            SAMPLE_APPLICATION["housing_situation"]
-        ),
-        help=_spec("housing_situation").help,
-    )
-    application_4, application_5 = st.columns(2)
-    owns_car = application_4.selectbox(
-        _spec("owns_car").label,
-        options=list(_spec("owns_car").allowed_values),
-        help=_spec("owns_car").help,
-    )
-    owns_property = application_5.selectbox(
-        _spec("owns_property").label,
-        options=list(_spec("owns_property").allowed_values),
-        index=1,
-        help=_spec("owns_property").help,
+    existing_monthly_debt_payments = cash_3.number_input(
+        "Existing Monthly Debt Payments",
+        min_value=0.0,
+        value=10_000.0,
+        step=1_000.0,
+        help="Enter the total scheduled monthly payment for current loans, cards, or other debts.",
     )
 
-    include_explanations = st.checkbox("Show model reason codes", value=True)
-    assess_submitted = st.form_submit_button(
-        "Assess Credit Risk",
-        width="stretch",
-        type="primary",
+    eligible_terms = [
+        term
+        for term in policy.permitted_terms_months
+        if age + term / 12 <= policy.maximum_age_at_maturity
+    ]
+    preferred_term_months = st.selectbox(
+        "Preferred Repayment Term",
+        options=eligible_terms or list(policy.permitted_terms_months),
+        index=0,
+        format_func=lambda term: f"{term} months ({term / 12:g} years)",
+        help="Compare this preferred term with the alternative EMI plans shown after simulation.",
     )
+    submitted = st.form_submit_button("Simulate Loan Eligibility", type="primary", width="stretch")
 
-if assess_submitted:
-    form_values = {
-        "age": age,
-        "years_employed": years_employed,
-        "family_members": family_members,
-        "number_of_children": number_of_children,
-        "annual_income": annual_income,
-        "requested_loan_amount": requested_loan_amount,
-        "loan_annuity": loan_annuity,
-        "goods_purchase_price": goods_purchase_price,
-        "credit_product_type": credit_product_type,
-        "income_type": income_type,
-        "housing_situation": housing_situation,
-        "owns_car": owns_car,
-        "owns_property": owns_property,
-    }
+if submitted:
     try:
-        model_input = build_model_input_from_form(**form_values)
-        prediction_results = predict_applicants(
-            model_input,
-            include_explanations=include_explanations,
+        application_input = LoanApplication(
+            product_type=product_code,
+            age=age,
+            employment_type=employment_type,
+            income_stability_years=income_stability_years,
+            monthly_net_income=monthly_net_income,
+            monthly_essential_expenses=monthly_essential_expenses,
+            existing_monthly_debt_payments=existing_monthly_debt_payments,
+            requested_loan_amount=requested_loan_amount,
+            preferred_term_months=preferred_term_months,
         )
-        if prediction_results is not None:
-            st.session_state["latest_prediction_results"] = prediction_results
-            st.session_state["latest_prediction_source"] = "guided applicant form"
+        result = simulate_loan(application_input)
+        result["repayment_stress"] = estimate_repayment_stress(
+            application_input,
+            float(result["preferred_plan_monthly_emi"]),
+        )
+        st.session_state["loan_simulation_result"] = result
     except ValueError as error:
-        st.error(f"Please review the application details: {error}")
+        st.error(f"Please review the submitted information: {error}")
 
-if "latest_prediction_results" in st.session_state:
-    render_results(
-        st.session_state["latest_prediction_results"],
-        st.session_state.get("latest_prediction_source", "applicant input"),
-    )
+if "loan_simulation_result" in st.session_state:
+    st.divider()
+    applicant_tab, bank_tab = st.tabs(["Applicant Dashboard", "Decision Insights"])
+    with applicant_tab:
+        render_applicant_dashboard(st.session_state["loan_simulation_result"])
+    with bank_tab:
+        render_bank_dashboard(st.session_state["loan_simulation_result"])
 
-with st.expander("Advanced input options"):
-    st.caption(
-        "Use friendly JSON for one new applicant or upload a CSV containing the deployable raw "
-        "feature contract. Historical SK_ID_CURR values are retained only as source_record_id."
-    )
-    with st.form("advanced_prediction_form"):
-        advanced_mode = st.radio("Input format", ["JSON", "CSV upload"], horizontal=True)
-        advanced_payload: str | Any
-        if advanced_mode == "JSON":
-            advanced_payload = st.text_area(
-                "New-applicant JSON",
-                value=json.dumps(SAMPLE_APPLICATION, indent=2),
-                height=360,
-            )
-        else:
-            advanced_payload = st.file_uploader("Historical or application CSV", type=["csv"])
-        advanced_explanations = st.checkbox(
-            "Include model reason codes",
-            value=True,
-            key="advanced_explanations",
-        )
-        advanced_submitted = st.form_submit_button("Run Advanced Prediction", width="stretch")
-
-    if advanced_submitted:
-        try:
-            if advanced_mode == "JSON":
-                parsed_applicants: dict[str, Any] | pd.DataFrame = json.loads(advanced_payload)
-                source = "advanced new-applicant JSON"
-            else:
-                if advanced_payload is None:
-                    raise ValueError("Choose a CSV file before running the prediction.")
-                parsed_applicants = pd.read_csv(advanced_payload)
-                source = "advanced CSV upload"
-            advanced_results = predict_applicants(
-                parsed_applicants,
-                include_explanations=advanced_explanations,
-            )
-            if advanced_results is not None:
-                st.session_state["latest_prediction_results"] = advanced_results
-                st.session_state["latest_prediction_source"] = source
-                st.rerun()
-        except (TypeError, ValueError, json.JSONDecodeError, pd.errors.ParserError) as error:
-            st.error(f"The advanced input is invalid: {error}")
-
-with st.expander("How the assessment works"):
+with st.expander("How maximum eligibility is calculated"):
     st.markdown(
-        "The deployable model intentionally sacrifices performance associated with unavailable "
-        "historical features so every predictor can be reproduced for a new applicant. The fitted "
-        "model returns a calibrated probability of payment difficulty. Saved policy thresholds "
-        "produce the risk band and recommendation. Expected loss is PD × illustrative LGD × "
-        "requested credit and is reported in neutral dataset currency units. Reason codes describe "
-        "model influence, not causation."
+        "The simulator calculates one EMI capacity from the product's maximum total debt-service "
+        "ratio and another from income remaining after essential expenses, existing debt, and a "
+        "residual-income buffer. The lower capacity is converted to principal using the standard "
+        "amortizing-loan formula and the longest age-permitted term, then capped by the illustrative "
+        "product maximum. This deterministic eligibility calculation does not use the ML probability."
     )
 
 st.info(
-    "Sensitive and proxy attributes require jurisdiction-specific legal and fairness review. This "
-    "portfolio system deliberately excludes gender, family status, education, occupation, and "
-    "unreproducible external scores from its recommended deployable contract."
+    "A real bank would additionally verify identity, income, employment, existing obligations, "
+    "fraud and compliance checks, collateral, product rules, and credit-bureau history. Eligibility "
+    "here means only that the submitted numbers pass the displayed illustrative affordability rules. "
+    "The separate ML estimate is a portfolio demonstration trained on historical outcomes."
 )

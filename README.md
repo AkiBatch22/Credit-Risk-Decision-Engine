@@ -1,205 +1,182 @@
-# Credit Risk Decision Engine
+# Hybrid Loan Eligibility & Repayment Simulator
 
-A production-shaped AI/ML portfolio project that converts a new credit application into a calibrated probability of payment difficulty, risk band, approve/manual-review/reject recommendation, illustrative expected loss, and optional applicant-level reason codes.
+A transparent bank-loan affordability simulation with maximum-loan estimation, repayment plans, actionable guidance, and a separately disclosed calibrated ML estimate of historical payment difficulty.
 
-> Educational prototype only. This repository is not a lending policy, credit bureau, adverse-action system, or production underwriting service.
+> Educational simulation only. It is not a credit bureau, official credit score, loan offer, underwriting policy, or regulated lending decision.
 
-## Business problem
+## What the production-facing application does
 
-Credit decisions need more than a binary classifier. A useful risk system must estimate probability quality, expose its decision-policy assumptions, preserve a human-review path, and prevent training-serving mismatch. This project demonstrates that workflow using the Kaggle Home Credit `application_train.csv` dataset without requiring raw data in Git.
+The Streamlit application and FastAPI service use only values submitted for the current inference request:
 
-`TARGET = 1` means observed payment difficulty in the source dataset. It is a historical modelling proxy, not a universal definition of default.
+- loan product and requested amount;
+- applicant age;
+- income source and years of income stability;
+- monthly net income;
+- monthly essential expenses;
+- existing monthly debt payments;
+- preferred repayment term.
 
-## System architecture
+The simulator returns:
 
-```mermaid
-flowchart LR
-    A["application_train.csv (local only)"] --> B["Schema and quality validation"]
-    B --> C["Deployable feature contract selection"]
-    C --> D["Model / policy / final-test split"]
-    D --> E["Fold-fitted preprocessing and candidate comparison"]
-    E --> F["Selected model and probability calibration"]
-    F --> G["Policy-holdout threshold optimization"]
-    G --> H["Untouched final-test evaluation"]
-    H --> I["Versioned artifacts and feature metadata"]
-    I --> J["Artifact-only prediction pipeline"]
-    J --> K["FastAPI"]
-    J --> L["Streamlit"]
-```
+- maximum affordable monthly EMI;
+- maximum eligible loan amount;
+- eligibility of the requested amount and term;
+- a 0–100 Financial Readiness Score with component breakdown;
+- debt-service, expense, and residual-income metrics;
+- explicit policy-check results;
+- alternative EMI plans with total interest and total repayment;
+- quantified actions that could improve eligibility.
+- a calibrated historical payment-difficulty probability and stress band;
+- local ML reason directions and an embedded final-test model-card snapshot.
 
-The 307,511 rows first reserve 61,503 untouched final-test rows. The remaining development data is split into 196,806 model-selection/calibration rows and 49,202 policy-selection rows. Logistic Regression, XGBoost, and LightGBM use identical stratified folds and fold-fitted preprocessing. Sigmoid and isotonic calibration are compared on the policy holdout, policy thresholds are then selected there, and the final test is opened only after model, calibration, and policy choices are fixed.
+The eligibility and maximum-loan calculations remain deterministic and do not use the ML probability. The separate ML model was trained on historical Home Credit outcomes, but inference uses no historical applicant lookup, `SK_ID_CURR`, `EXT_SOURCE`, or bureau score.
 
-## Training vs deployment feature availability
+## Where machine learning is used
 
-Home Credit contains strong anonymized `EXT_SOURCE_1`, `EXT_SOURCE_2`, and `EXT_SOURCE_3` features. Their generation mechanism is unavailable, so a completely new applicant cannot supply them. Their historical EDA and full-feature benchmark remain useful, but the deployable model excludes them and every engineered aggregate derived from them.
+The optional **Repayment-Stress Estimate** answers a narrower question than eligibility: how often did historically similar Home Credit application profiles experience the dataset's `TARGET=1` payment-difficulty outcome?
 
-The deployable model intentionally sacrifices any performance associated with unavailable features so that every production feature can be reproduced for a new applicant.
+Its inference contract is deliberately limited to fields derivable from the simple form:
 
-The same rule excludes bureau inquiries, building records, social-circle history, document/contact telemetry, administrative history, and regional attributes whose upstream source is not implemented. Gender, family status, education, and occupation are excluded from the recommended contract because of sensitive/proxy concerns and the absence of a jurisdiction-specific necessity and fairness review. The complete audit is in [`docs/feature_availability_audit.md`](docs/feature_availability_audit.md).
+- age;
+- income source;
+- income stability;
+- submitted monthly income;
+- requested loan amount;
+- calculated EMI for the preferred plan;
+- derived loan-to-income and EMI-to-income ratios.
 
-## Deployable feature contract
+Expenses, current debts, loan product, and the readiness score are not fed into ML because equivalent training fields are not reliably available in `application_train.csv`. They still drive the deterministic affordability result.
 
-`src/components/feature_contract.py` is the shared source of truth for training, validation, Streamlit, FastAPI, inference, and explanation labels. It defines field source, requirement status, type, category vocabulary, UI range, help text, and internal transformation.
+Training uses a stratified train/calibration/final-test design:
 
-Applicant-provided deployable fields:
+1. Candidate selection is performed with out-of-fold predictions only inside the training partition.
+2. The selected base estimator is fitted on training data only.
+3. Sigmoid probability calibration is fitted on a separate calibration partition.
+4. The final test is evaluated once after model and calibration choices are fixed.
 
-- age and employment duration;
-- family members and number of children;
-- annual income, requested credit, repayment obligation, and goods/asset price;
-- credit product type, income type, and housing situation;
-- declared car and property ownership.
-
-System-derived deployable fields:
-
-- age and cleaned employment years, employment anomaly, and employment-to-age ratio;
-- loan/income, repayment/income, loan/repayment, and loan/goods-price ratios;
-- income, loan, and repayment per household member;
-- children-to-household ratio.
-
-Feature engineering is non-mutating, target-independent, zero-safe, and shared by training and inference. Arbitrary unused dataset columns cannot silently enter production training.
-
-## Record IDs vs application IDs
-
-`SK_ID_CURR` identifies a historical Home Credit row. It is retained only for research or returned as `source_record_id` during historical CSV scoring. It is never a predictor and is not required from a new applicant.
-
-Every scoring request receives a server-generated traceability identifier such as `APP-7C91E28A4F`. `application_id` is created with a UUID-derived random suffix after input normalization, returned by FastAPI and Streamlit, and never passed to feature engineering, preprocessing, calibration, or the model.
-
-## Measured model results
-
-All figures below were produced on the complete local dataset on 10 August 2026. They are stored in ignored artifact JSON files; no metric was inferred or fabricated.
-
-### Research full-feature benchmark
-
-The preserved historical benchmark used the broad Home Credit application table, including anonymized external scores.
-
-| Metric | Full-feature benchmark |
-|---|---:|
-| Selected model | XGBoost |
-| Calibrated final-test ROC-AUC | 0.7687 |
-| Calibrated final-test PR-AUC | 0.2605 |
-| Calibrated final-test Brier score | 0.06701 |
-| Top 10% risk default capture | 35.23% |
-| Calibration | Isotonic |
-| Approve / reject thresholds | 0.12 / 0.13 |
-
-### Deployable application model
-
-Development-only out-of-fold comparison on the 196,806-row model partition:
-
-| Candidate | ROC-AUC | PR-AUC | Brier score |
-|---|---:|---:|---:|
-| XGBoost | 0.6840 | 0.1636 | 0.07146 |
-| LightGBM | 0.6803 | 0.1602 | 0.07165 |
-| Logistic Regression | 0.6401 | 0.1323 | 0.07278 |
-
-XGBoost was selected dynamically from these measurements. Final deployable results on the untouched 61,503-row test:
-
-| Metric | Deployable result |
-|---|---:|
-| Calibrated ROC-AUC | 0.6920 |
-| Calibrated PR-AUC | 0.1686 |
-| Calibrated Brier score | 0.07121 |
-| Top 10% risk default capture | 26.08% |
-| Selected calibration | Isotonic |
-| Measured approve / reject thresholds | 0.11 / 0.12 |
-| Approval / review / rejection | 78.78% / 3.29% / 17.92% |
-| Approved observed payment-difficulty rate | 5.70% |
-
-Removing unavailable features reduced final-test ROC-AUC by 0.0766 and PR-AUC by 0.0918, while Brier score increased by 0.00420. This is the expected cost of removing a major source of historical signal and eliminates the more serious failure of pretending those values exist for new applicants.
-
-Isotonic calibration won policy-holdout Brier score. On the final test its Brier score was slightly worse than the uncalibrated model (0.071207 versus 0.071200), while ranking improved slightly. That limitation is reported rather than hidden.
-
-## Risk policy and expected loss
-
-Calibrated probability is converted to `LOW`, `MODERATE`, `HIGH`, or `VERY_HIGH` risk and to `APPROVE`, `MANUAL_REVIEW`, or `REJECT`. Threshold candidates are constrained by illustrative approval, review-capacity, and approved-risk limits on the policy holdout.
-
-```text
-Expected Loss = PD × LGD × EAD
-```
-
-The 60% LGD, 8% net margin, and requested credit as EAD are transparent illustrative assumptions—not portfolio facts. Monetary results are labelled in neutral dataset currency units.
-
-## Explainability
-
-For the selected XGBoost model, inference returns local native TreeSHAP contributions using friendly contract labels. External-score features, `SK_ID_CURR`, and `application_id` cannot appear because none enter the deployable feature matrix. Contributions describe model influence, not causation or legally sufficient adverse-action reasons.
-
-## Project structure
-
-```text
-.
-├── api.py                         # Explicit new-applicant FastAPI schema
-├── app.py                         # Guided Streamlit application
-├── docs/feature_availability_audit.md
-├── notebooks/                     # Five research-to-deployment notebooks
-├── scripts/refine_notebooks.py    # Reproducible notebook source builder
-├── src/
-│   ├── config.py
-│   ├── components/
-│   │   ├── feature_contract.py    # Production feature and UI contract
-│   │   ├── feature_engineering.py # Deployable and benchmark transformations
-│   │   └── ...
-│   ├── pipeline/                  # Training and artifact-only prediction
-│   └── utils/artifacts.py
-├── tests/                         # Synthetic deterministic tests
-├── .github/workflows/ci.yml
-└── pyproject.toml
-```
-
-Raw/processed data, trained artifacts, logs, environments, and caches are ignored. The raw dataset is not modified by training or prediction.
-
-## Installation
-
-Python 3.11 is the supported runtime.
+This prevents the final test from becoming a repeatedly consulted model-selection set. Run the dedicated full-data pipeline with:
 
 ```bash
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements-dev.txt
-python -m pip install -e .
+python -m src.pipeline.stress_training_pipeline
 ```
 
-Place a separately obtained `application_train.csv` at `data/raw/application_train.csv`.
+Generated ML artifacts stay under ignored `artifacts/`; the raw dataset stays under ignored `data/raw/` and is never modified.
 
-## Train and predict
+## Why this is not called a credit score
 
-```bash
-python -m src.pipeline.training_pipeline --data-path data/raw/application_train.csv
-credit-risk-predict --input applicant.json --explain
-credit-risk-predict --input applicants.csv
+A real credit score normally depends on verified repayment and credit-account history that this project does not possess. Calling an input-only estimate a credit score would be misleading.
+
+The application therefore reports a **Financial Readiness Score**. It is derived transparently from:
+
+- pre-loan cash-flow surplus;
+- existing debt burden;
+- debt burden after the requested loan;
+- income-source stability;
+- essential-expense balance.
+
+It measures the strength of the submitted affordability scenario only. It does not estimate historical repayment behavior.
+
+## Affordability methodology
+
+The engine calculates two independent monthly capacities:
+
+```text
+Debt-service capacity
+    = monthly income × maximum debt-service ratio − existing debt payments
+
+Cash-flow capacity
+    = monthly income − essential expenses − existing debt payments
+      − required residual-income buffer
+
+Maximum affordable EMI
+    = minimum(debt-service capacity, cash-flow capacity)
 ```
 
-Training persists the preprocessor, explanation model, calibrated prediction model, metrics, feature contract, complete feature-availability audit, split details, selected calibration, and policy. Prediction never retrains.
+The maximum EMI is converted to principal with the standard amortizing-loan present-value formula using the longest permitted term that satisfies the maximum age-at-maturity rule. The result is capped by the illustrative product maximum.
 
-## FastAPI
+Each requested repayment plan is checked against:
+
+- age at maturity;
+- minimum income-source stability;
+- maximum total debt-service ratio;
+- minimum post-loan residual-income buffer;
+- product maximum principal;
+- calculated affordable principal.
+
+Possible statuses are:
+
+- `ELIGIBLE`
+- `ELIGIBLE_FOR_LOWER_AMOUNT_OR_DIFFERENT_TERM`
+- `NOT_CURRENTLY_ELIGIBLE`
+
+These describe the simulator outcome—not a bank approval or rejection.
+
+## Illustrative product policies
+
+The policies in `src/components/loan_simulator.py` are configuration examples rather than current market offers:
+
+- Personal Loan: 14% illustrative annual rate, 12–60 months, 40% total debt-service ceiling.
+- Vehicle Loan: 10% illustrative annual rate, 12–84 months, 45% ceiling.
+- Home Loan: 8.5% illustrative annual rate, 60–240 months, 50% ceiling.
+
+Every policy also defines a residual-income buffer, income-stability requirement, age-at-maturity limit, and product amount ceiling. A real institution would replace these values with approved, version-controlled policies and validated pricing.
+
+## Applicant dashboard
+
+The applicant view explains:
+
+- whether the requested structure fits the current inputs;
+- maximum simulated eligibility;
+- maximum affordable EMI;
+- readiness score and band;
+- post-EMI monthly surplus;
+- alternative repayment terms;
+- total interest and repayment;
+- calculated steps to improve affordability.
+
+Recommendations are based on the actual shortfall. Examples include reducing the requested amount, lowering existing monthly debt, increasing stable verified income, improving expense headroom, building a longer income history, or selecting a different term.
+
+## Decision Insights dashboard
+
+The bank view exposes:
+
+- current and requested total debt-service ratios;
+- essential-expense ratio;
+- preferred-plan EMI;
+- every policy rule, observed value, limit, and pass/fail result;
+- readiness-score component points;
+- all product-policy assumptions.
+- the calibrated historical stress probability and band;
+- final-test ROC-AUC, PR-AUC, and Brier score;
+- model version, calibration method, local reason directions, and scope limitations.
+
+This separation makes the simulation auditable and avoids hiding policy logic inside a model probability. The ML estimate cannot change eligibility, the maximum loan amount, EMI plans, or pricing.
+
+## API
+
+Start the service:
 
 ```bash
 uvicorn api:app --host 0.0.0.0 --port 8000
 ```
 
-New-application request—no dataset ID or external score is accepted:
+Example request:
 
 ```json
 {
+  "product_type": "personal_loan",
   "age": 34,
-  "years_employed": 5,
-  "family_members": 2,
-  "number_of_children": 0,
-  "annual_income": 202500,
-  "requested_loan_amount": 406597.5,
-  "loan_annuity": 24700.5,
-  "goods_purchase_price": 351000,
-  "credit_product_type": "Cash loans",
-  "income_type": "Working",
-  "housing_situation": "House / apartment",
-  "owns_car": false,
-  "owns_property": true,
-  "include_explanation": true
+  "employment_type": "Salaried",
+  "income_stability_years": 5,
+  "monthly_net_income": 100000,
+  "monthly_essential_expenses": 30000,
+  "existing_monthly_debt_payments": 5000,
+  "requested_loan_amount": 300000,
+  "preferred_term_months": 36
 }
 ```
 
-The response includes `application_id`, calibrated probability, risk band, recommendation, expected loss, and optional risk drivers. Normal errors do not expose stack traces.
+Use `POST /simulate`. The response includes a `repayment_stress` object. If artifacts are not installed it returns an explicit `available: false` state instead of failing the affordability simulation. `GET /products` lists product identifiers, while `GET /health` reports service and ML-artifact availability.
 
 ## Streamlit
 
@@ -207,9 +184,37 @@ The response includes `application_id`, calibrated probability, risk band, recom
 streamlit run app.py
 ```
 
-The default guided form uses native numeric inputs, categorical select boxes, and contract-sourced help icons. It generates the application ID on submission and never asks for `SK_ID_CURR` or external scores. Advanced JSON and CSV scoring remain available; historical IDs are output only as `source_record_id`.
+The guided form uses neutral currency units because no specific country, institution, or currency has been established.
 
-## Tests and CI
+## Historical ML research
+
+The five Home Credit notebooks and training/prediction modules remain in the repository as a separate research track. They demonstrate leakage-safe splitting, fold-fitted preprocessing, XGBoost/LightGBM/Logistic Regression comparison, calibration, threshold analysis, and feature-availability auditing.
+
+Historical benchmark results are retained for research integrity. The original 13-field research/serving model still does not determine the application-facing result because it requires fields intentionally removed from the simplified experience.
+
+- the dataset describes historical Home Credit applicants rather than the current user;
+- no bureau or past repayment history is submitted;
+- hidden defaults would make its prediction misleading.
+
+The new form-aligned model is separately trained for the secondary repayment-stress panel. It uses fewer features, so its measured performance—not the older benchmark—must be used when describing the live ML estimate.
+
+## Project structure
+
+```text
+.
+├── app.py                              # Applicant and decision-insights dashboards
+├── api.py                              # Hybrid simulation API
+├── src/components/loan_simulator.py    # Affordability, score, plans, recommendations
+├── src/components/repayment_stress.py  # Form-aligned ML inference and reason directions
+├── src/components/feature_contract.py  # Historical ML application feature audit
+├── src/pipeline/stress_training_pipeline.py
+├── src/pipeline/                        # Preserved research ML training and inference
+├── notebooks/                           # Home Credit research notebooks
+├── docs/feature_availability_audit.md
+└── tests/                               # Deterministic simulator and ML tests
+```
+
+## Validation
 
 ```bash
 python -m compileall app.py api.py src tests
@@ -217,21 +222,21 @@ python -m pytest -q
 python -m pip check
 ```
 
-Tests use synthetic data and temporary artifacts. They require no external services, secrets, raw dataset, or pre-existing user model.
+Tests cover EMI mathematics, principal recovery, eligibility, recommendations, deterministic outputs, form-to-training feature alignment, probability bands, reason codes, missing-artifact behavior, API validation, and the preserved ML research components.
 
-## Limitations, ethics, and fairness
+## What a real bank would still require
 
-- The model uses one historical competition table and is not representative of every population, product, geography, or economic period.
-- `TARGET` is a proxy outcome; historical labels, missingness, and prior decisions can encode bias.
-- Even the reduced contract contains potential socioeconomic proxies and has not passed a jurisdiction-specific legal or fairness review.
-- No reject inference, causal analysis, temporal validation, drift study, stress test, independent validation, or production security assessment is claimed.
-- Explanations are associational, not causal or guaranteed to satisfy adverse-action requirements.
-- Real use requires data minimization, access controls, subgroup performance/calibration review, monitoring, human oversight, appeal processes, and legal/regulatory approval.
+A production lending system would additionally require:
 
-## Future improvements
+- identity, consent, KYC, fraud, sanctions, and AML controls;
+- verified income and employment;
+- verified existing obligations and bureau history;
+- product, collateral, down-payment, and loan-purpose rules;
+- institution-specific pricing and cost-of-risk models;
+- case persistence and an underwriter workflow;
+- adverse-action and appeal processes;
+- access controls, encryption, retention policies, and audit logging;
+- fairness, calibration, drift, stress, and outcome monitoring;
+- legal, compliance, model-risk, and independent validation approval.
 
-- Add point-in-time, documented upstream integrations only when their inference availability is guaranteed.
-- Add temporal/out-of-time validation and repeated calibration assessment.
-- Add fairness metrics, subgroup calibration, drift monitors, and a formal model card.
-- Tune candidates inside nested validation and validate policy assumptions with real portfolio economics.
-- Version data/model artifacts in a registry and add container/deployment manifests.
+Eligibility in this project means only that submitted values satisfy displayed illustrative affordability rules.

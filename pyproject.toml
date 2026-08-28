@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "credit-risk-decision-engine"
 version = "1.0.0"
-description = "Leakage-safe probability, expected-loss, and decision-policy prototype for Home Credit data"
+description = "Hybrid loan-affordability simulator with calibrated repayment-stress ML"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
@@ -23,6 +23,7 @@ dependencies = [
 [project.scripts]
 credit-risk-train = "src.pipeline.training_pipeline:main"
 credit-risk-predict = "src.pipeline.prediction_pipeline:main"
+repayment-stress-train = "src.pipeline.stress_training_pipeline:main"
 
 [tool.setuptools.packages.find]
 include = ["src*"]
