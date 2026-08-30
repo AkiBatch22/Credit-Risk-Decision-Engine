@@ -101,6 +101,18 @@ def _inject_styles() -> None:
         }
         .feature-card h3 { font-size: 1.02rem; margin: 0 0 .45rem; }
         .feature-card p { color: var(--muted); font-size: .9rem; line-height: 1.5; margin: 0; }
+        .definition-card {
+            background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+            padding: 1.05rem 1.1rem; min-height: 142px; height: 100%;
+            box-shadow: 0 4px 14px rgba(32,56,85,.04);
+        }
+        .definition-card .definition-label {
+            color: var(--blue); font-size: .79rem; font-weight: 750; margin-bottom: .55rem;
+        }
+        .definition-card .definition-copy {
+            color: var(--ink); font-size: 1rem; font-weight: 650; line-height: 1.35;
+            white-space: normal; overflow-wrap: anywhere;
+        }
         .plain-note {
             padding: .9rem 1rem; background: #edf7f5; border: 1px solid #c9e7e2;
             border-radius: 12px; color: #175d59; margin: .65rem 0 1rem;
@@ -206,6 +218,18 @@ def _feature_card(icon: str, title: str, body: str) -> None:
     )
 
 
+def _definition_card(label: str, description: str) -> None:
+    st.markdown(
+        f"""
+        <div class="definition-card">
+          <div class="definition-label">{label}</div>
+          <div class="definition-copy">{description}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_home() -> None:
     st.markdown(
         """
@@ -250,10 +274,14 @@ def _render_home() -> None:
 
     st.markdown("### What makes a metric useful?")
     metric_1, metric_2, metric_3, metric_4 = st.columns(4)
-    metric_1.metric("Maximum affordable EMI", "Your monthly ceiling")
-    metric_2.metric("Cash-flow buffer", "Money left after payments")
-    metric_3.metric("Payoff horizon", "Time until debt-free")
-    metric_4.metric("Interest saved", "Cost avoided by paying faster")
+    with metric_1:
+        _definition_card("Maximum affordable EMI", "The monthly loan payment your submitted cash flow can support.")
+    with metric_2:
+        _definition_card("Cash-flow buffer", "Income remaining after essentials, existing debts, and the proposed EMI.")
+    with metric_3:
+        _definition_card("Payoff horizon", "The estimated time required to repay all submitted debt balances.")
+    with metric_4:
+        _definition_card("Interest saved", "The estimated borrowing cost avoided by paying debt faster.")
     st.markdown(
         '<div class="plain-note"><strong>Plain-language design:</strong> every primary number is paired with what it means, what changes it, and whether it is a calculation, policy assumption, or ML estimate.</div>',
         unsafe_allow_html=True,
