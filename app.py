@@ -121,6 +121,19 @@ def _inject_styles() -> None:
             padding: .9rem 1rem; background: #fff8e8; border: 1px solid #f0d899;
             border-radius: 12px; color: #705319; margin: .65rem 0 1rem;
         }
+        .recommendation-card {
+            display: grid; grid-template-columns: 34px 1fr; gap: .8rem;
+            padding: 1rem 1.05rem; margin: .65rem 0; background: white;
+            border: 1px solid var(--line); border-radius: 13px;
+            box-shadow: 0 3px 12px rgba(32,56,85,.035);
+        }
+        .recommendation-number {
+            display: grid; place-items: center; width: 30px; height: 30px;
+            border-radius: 50%; background: #eaf3fb; color: var(--blue);
+            font-size: .82rem; font-weight: 800;
+        }
+        .recommendation-title { color: var(--ink); font-weight: 750; margin-bottom: .25rem; }
+        .recommendation-detail { color: var(--muted); font-size: .91rem; line-height: 1.5; }
         .result-banner {
             border-radius: 15px; padding: 1.1rem 1.25rem; margin: .4rem 0 1.15rem;
             border: 1px solid #bddfd8; background: #ecf8f5;
@@ -367,7 +380,18 @@ def _render_loan_results(result: dict[str, object], symbol: str) -> None:
         recommendations = result["recommendations"]
         if recommendations:
             for index, recommendation in enumerate(recommendations, start=1):
-                st.markdown(f"**{index}. {recommendation['action']}**  \n{recommendation['detail']}")
+                st.markdown(
+                    f"""
+                    <div class="recommendation-card">
+                      <div class="recommendation-number">{index}</div>
+                      <div>
+                        <div class="recommendation-title">{recommendation['action']}</div>
+                        <div class="recommendation-detail">{recommendation['detail']}</div>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
         else:
             st.info("No specific recommendation was generated for this scenario.")
         st.markdown(
@@ -410,9 +434,19 @@ def _render_loan_results(result: dict[str, object], symbol: str) -> None:
         f1.metric("Financial foundation", f"{int(foundation['score'])}/100", str(foundation["band"]).title())
         coverage = assets["emergency_coverage_months"]
         f2.metric("Emergency coverage", "N/A" if coverage is None else f"{float(coverage):.1f} months")
-        f3.metric("Adjusted emergency liquidity", _money(float(assets["adjusted_emergency_liquidity"]), symbol))
+        f3.metric("Liquidity strength", str(assets["emergency_coverage_band"]).replace("_", " ").title())
         f4.metric("Rate-stress result", str(stress["resilience"]).title())
-        st.caption("Assets strengthen resilience indicators only. They never increase maximum affordable EMI.")
+        st.markdown("#### What your assets contribute")
+        asset_1, asset_2, asset_3, asset_4 = st.columns(4)
+        asset_1.metric("Gross asset value", _money(float(assets["total_assets"]), symbol))
+        asset_2.metric("Related liabilities", _money(float(assets["total_asset_liabilities"]), symbol))
+        asset_3.metric("Net asset equity", _money(float(assets["net_asset_equity"]), symbol))
+        asset_4.metric("Adjusted emergency liquidity", _money(float(assets["adjusted_emergency_liquidity"]), symbol))
+        st.markdown(
+            f'<div class="plain-note"><strong>Effect on maximum affordable EMI: {_money(0, symbol)}.</strong> '
+            f'Your {_money(float(result["max_affordable_emi"]), symbol)} monthly ceiling comes from recurring income, expenses, existing debt, and the safety buffer—not from selling assets. Assets improve emergency resilience and may support a down payment. If you use them to reduce the amount borrowed, the requested EMI can fall, but the simulator never assumes that automatically.</div>',
+            unsafe_allow_html=True,
+        )
         stress_1, stress_2, stress_3 = st.columns(3)
         stress_1.metric("Stressed rate", f"{float(stress['stressed_annual_interest_rate_percent']):.2f}%")
         stress_2.metric("Stressed EMI", _money(float(stress["stressed_emi"]), symbol))
@@ -704,15 +738,22 @@ def _render_debt_journey(symbol: str) -> None:
         '<div class="plain-note"><strong>Best use:</strong> model credit cards, personal loans, or other fixed-rate balances. Enter APR as an annual percentage, such as 24 for 24%.</div>',
         unsafe_allow_html=True,
     )
+    setup_1, setup_2 = st.columns([1, 2])
+    debt_count = setup_1.selectbox(
+        "Number of debts",
+        options=list(range(1, 7)),
+        index=2,
+        key="debt_count",
+        help="The form updates immediately to show exactly this many debt accounts.",
+    )
+    strategy_label = setup_2.radio(
+        "Payoff method",
+        options=["Highest interest first", "Smallest balance first"],
+        horizontal=True,
+        key="debt_strategy_label",
+        help="Highest interest first usually minimizes cost. Smallest balance first may provide quicker visible wins.",
+    )
     with st.form("debt_repayment_form"):
-        setup_1, setup_2 = st.columns([1, 2])
-        debt_count = setup_1.selectbox("Number of debts", options=list(range(1, 7)), index=2)
-        strategy_label = setup_2.radio(
-            "Payoff method",
-            options=["Highest interest first", "Smallest balance first"],
-            horizontal=True,
-            help="Highest interest first usually minimizes cost. Smallest balance first may provide quicker visible wins.",
-        )
         st.markdown("### Your debts")
         debt_values: list[tuple[str, float, float, float]] = []
         defaults = [

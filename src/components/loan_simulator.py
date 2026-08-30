@@ -790,10 +790,12 @@ def simulate_loan(application: LoanApplication) -> dict[str, Any]:
     if selected_plan_fits:
         recommendations.append(
             {
-                "action": "Keep the selected payment below the calculated ceiling",
+                "action": "Your chosen monthly payment fits your budget",
                 "detail": (
-                    f"The requested EMI is {requested_emi:,.2f} against a calculated monthly "
-                    f"capacity of {max_affordable_emi:,.2f}."
+                    f"The estimated payment is {requested_emi:,.2f} per month, while the "
+                    f"calculated limit is {max_affordable_emi:,.2f}. That leaves "
+                    f"{max(max_affordable_emi - requested_emi, 0):,.2f} of room below the limit. "
+                    "Treat the limit as a safety ceiling, not a spending target."
                 ),
             }
         )
@@ -801,33 +803,33 @@ def simulate_loan(application: LoanApplication) -> dict[str, Any]:
         if amount_reduction > 0:
             recommendations.append(
                 {
-                    "action": "Reduce the amount at the selected term",
+                    "action": "Borrow less to keep your chosen repayment period",
                     "detail": (
-                        f"The selected {application.preferred_term_months}-month term supports "
-                        f"approximately {max_principal_selected_term:,.2f}; reduce the request "
-                        f"by about {amount_reduction:,.2f}."
+                        f"Over {application.preferred_term_months} months, the submitted budget "
+                        f"supports about {max_principal_selected_term:,.2f}. That is roughly "
+                        f"{amount_reduction:,.2f} less than the amount requested."
                     ),
                 }
             )
         if supporting_plan is not None and shortest_supporting_term != application.preferred_term_months:
             recommendations.append(
                 {
-                    "action": "Consider the shortest supporting term",
+                    "action": "Use a longer term if you need the full loan amount",
                     "detail": (
-                        f"The requested amount first fits at {shortest_supporting_term} months "
-                        f"with an EMI of {float(supporting_plan['monthly_emi']):,.2f}. This adds "
-                        f"approximately {float(incremental_interest or 0):,.2f} of total interest "
-                        "versus the selected term."
+                        f"The full amount first fits at {shortest_supporting_term} months, with an "
+                        f"estimated monthly payment of {float(supporting_plan['monthly_emi']):,.2f}. "
+                        f"The trade-off is about {float(incremental_interest or 0):,.2f} more total "
+                        "interest than your chosen term."
                     ),
                 }
             )
         elif max_principal_longest_term > max_principal_selected_term:
             recommendations.append(
                 {
-                    "action": "Adjust both amount and term",
+                    "action": "Lower the loan amount and consider more time to repay",
                     "detail": (
-                        f"No available term supports the full request. The longest eligible "
-                        f"{longest_term}-month term supports approximately "
+                        f"Even the longest available {longest_term}-month term does not fit the "
+                        f"full request. At that term, the submitted budget supports about "
                         f"{max_principal_longest_term:,.2f}."
                     ),
                 }
@@ -836,11 +838,11 @@ def simulate_loan(application: LoanApplication) -> dict[str, Any]:
     if emi_shortfall > 0:
         recommendations.append(
             {
-                "action": "Close the monthly affordability gap",
+                "action": f"Reduce the monthly payment by about {emi_shortfall:,.2f}",
                 "detail": (
-                    f"The preferred EMI is about {emi_shortfall:,.2f} above the calculated "
-                    "monthly capacity. A lower EMI, lower existing debt, lower recurring "
-                    "expenses, or higher verified income would be required."
+                    "You can close this gap by borrowing less, choosing a longer available term, "
+                    "paying down an existing debt, reducing recurring expenses, or increasing "
+                    "stable verified income. Assets alone do not increase this monthly limit."
                 ),
             }
         )
@@ -853,32 +855,35 @@ def simulate_loan(application: LoanApplication) -> dict[str, Any]:
         )
         recommendations.append(
             {
-                "action": "Build emergency liquidity separately from EMI capacity",
+                "action": "Build a larger emergency fund",
                 "detail": (
-                    f"Adjusted liquid resources cover {float(coverage):.1f} month(s) of the "
-                    f"submitted post-loan commitments. About {liquidity_gap:,.2f} more would "
-                    "reach a three-month planning buffer; this does not increase affordable EMI."
+                    f"Your accessible assets could cover about {float(coverage):.1f} month(s) of "
+                    f"expenses, existing debts, and the proposed EMI. Saving about "
+                    f"{liquidity_gap:,.2f} more would reach a three-month buffer. This makes the "
+                    "plan safer, but it does not allow a higher monthly EMI."
                 ),
             }
         )
     if ltv_stretched:
         recommendations.append(
             {
-                "action": "Increase the down payment or reduce the financed amount",
+                "action": "Use a larger down payment or borrow less",
                 "detail": (
-                    f"The requested LTV is {float(product_guidance['requested_ltv']):.1%} "
-                    f"against the illustrative {float(product_guidance['recommended_ltv']):.0%} "
-                    "guidance threshold."
+                    f"You are asking to finance {float(product_guidance['requested_ltv']):.1%} "
+                    f"of the purchase value. The displayed planning guide is "
+                    f"{float(product_guidance['recommended_ltv']):.0%}; a larger down payment "
+                    "reduces the loan and its monthly payment."
                 ),
             }
         )
     if application.product_type == "personal_loan" and product_guidance["salary_multiple_band"] in {"STRETCHED", "VERY_HIGH"}:
         recommendations.append(
             {
-                "action": "Review the requested personal-loan size",
+                "action": "Consider a smaller personal loan",
                 "detail": (
-                    f"The request equals {float(product_guidance['loan_to_monthly_income_multiple']):.1f} "
-                    "months of submitted income, which is a stretched planning signal."
+                    f"The requested amount equals about "
+                    f"{float(product_guidance['loan_to_monthly_income_multiple']):.1f} months of "
+                    "submitted income. A smaller amount can reduce both the EMI and total interest."
                 ),
             }
         )
