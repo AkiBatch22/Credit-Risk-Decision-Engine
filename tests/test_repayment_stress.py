@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from src.components.loan_simulator import LoanApplication
+from src.components.loan_simulator import LoanApplication, simulate_loan
 from src.components.repayment_stress import (
     application_to_stress_features,
     estimate_repayment_stress,
@@ -72,6 +72,25 @@ def test_estimator_reports_unavailable_without_artifacts(tmp_path):
     )
     assert result["available"] is False
     assert "training pipeline" in result["unavailable_reason"]
+
+
+def test_ml_estimate_never_changes_deterministic_affordability(tmp_path):
+    applicant = application()
+    before = simulate_loan(applicant)
+    estimate_repayment_stress(
+        applicant,
+        float(before["requested_emi"]),
+        model_path=tmp_path / "missing.joblib",
+        metadata_path=tmp_path / "missing.json",
+    )
+    after = simulate_loan(applicant)
+    for key in (
+        "plan_status",
+        "loan_plan_fit_pct",
+        "max_affordable_emi",
+        "max_principal_selected_term",
+    ):
+        assert before[key] == after[key]
 
 
 def test_estimator_returns_probability_and_reason_codes(tmp_path):

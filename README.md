@@ -1,6 +1,6 @@
-# Hybrid Loan Eligibility & Repayment Simulator
+# ClearPath Credit Decision Studio
 
-A transparent bank-loan affordability simulation with maximum-loan estimation, repayment plans, actionable guidance, and a separately disclosed calibrated ML estimate of historical payment difficulty.
+A professional, explainable financial decision experience with loan-affordability simulation, repayment-plan comparison, multi-debt payoff planning, actionable guidance, and a separately disclosed calibrated ML estimate of historical payment difficulty.
 
 > Educational simulation only. It is not a credit bureau, official credit score, loan offer, underwriting policy, or regulated lending decision.
 
@@ -14,20 +14,35 @@ The Streamlit application and FastAPI service use only values submitted for the 
 - monthly net income;
 - monthly essential expenses;
 - existing monthly debt payments;
-- preferred repayment term.
+- preferred repayment term;
+- optional asset, collateral-value, liability, and down-payment details.
 
 The simulator returns:
 
-- maximum affordable monthly EMI;
-- maximum eligible loan amount;
-- eligibility of the requested amount and term;
-- a 0–100 Financial Readiness Score with component breakdown;
+- Loan Plan Fit: the percentage of requested EMI supported by current cash flow;
+- requested EMI, maximum affordable EMI, and the exact EMI shortfall;
+- maximum principal at the selected term and, separately, at the longest age-eligible term;
+- the shortest available term that supports the request, where one exists;
+- a supporting 0–100 Financial Foundation indicator with component breakdown;
+- adjusted emergency liquidity and months of post-loan commitment coverage;
+- rate-stress, LTV/down-payment, and personal-loan salary-multiple guidance;
 - debt-service, expense, and residual-income metrics;
 - explicit policy-check results;
 - alternative EMI plans with total interest and total repayment;
-- quantified actions that could improve eligibility.
+- quantified actions that could make the requested structure fit.
 - a calibrated historical payment-difficulty probability and stress band;
 - local ML reason directions and an embedded final-test model-card snapshot.
+
+The separate debt-payoff journey accepts up to ten balances with their APRs and minimum payments. It returns:
+
+- a debt-free horizon and estimated finish month;
+- the total monthly plan payment and estimated lifetime interest;
+- interest and time saved versus paying only the submitted fixed minimums;
+- highest-interest-first (avalanche) and smallest-balance-first (snowball) comparisons;
+- a payoff order, annual milestones, and month-by-month balance schedule;
+- explicit assumptions and an honest warning when the submitted payments do not reduce the debt.
+
+Debt repayment is deterministic amortization—not ML. The project has no behavioural repayment history, future rate changes, fees, or account statements that would justify predicting whether a person will follow the plan.
 
 The eligibility and maximum-loan calculations remain deterministic and do not use the ML probability. The separate ML model was trained on historical Home Credit outcomes, but inference uses no historical applicant lookup, `SK_ID_CURR`, `EXT_SOURCE`, or bureau score.
 
@@ -45,7 +60,7 @@ Its inference contract is deliberately limited to fields derivable from the simp
 - calculated EMI for the preferred plan;
 - derived loan-to-income and EMI-to-income ratios.
 
-Expenses, current debts, loan product, and the readiness score are not fed into ML because equivalent training fields are not reliably available in `application_train.csv`. They still drive the deterministic affordability result.
+Expenses, current debts, loan product, assets, and the Financial Foundation indicator are not fed into ML because equivalent training fields are not reliably available in `application_train.csv`. They still drive deterministic affordability or resilience diagnostics as documented below.
 
 Training uses a stratified train/calibration/final-test design:
 
@@ -66,15 +81,21 @@ Generated ML artifacts stay under ignored `artifacts/`; the raw dataset stays un
 
 A real credit score normally depends on verified repayment and credit-account history that this project does not possess. Calling an input-only estimate a credit score would be misleading.
 
-The application therefore reports a **Financial Readiness Score**. It is derived transparently from:
+The primary result is therefore **Loan Plan Fit**, not a credit score. It is simply:
+
+```text
+Loan Plan Fit = min(maximum affordable EMI ÷ requested EMI, 1) × 100
+```
+
+The application also reports a supporting **Financial Foundation** indicator derived transparently from:
 
 - pre-loan cash-flow surplus;
 - existing debt burden;
-- debt burden after the requested loan;
+- essential-expense burden;
+- adjusted emergency liquidity;
 - income-source stability;
-- essential-expense balance.
 
-It measures the strength of the submitted affordability scenario only. It does not estimate historical repayment behavior.
+It measures pre-loan financial footing only. Neither metric estimates historical repayment behavior, acts as a bureau score, or represents approval probability.
 
 ## Affordability methodology
 
@@ -92,7 +113,13 @@ Maximum affordable EMI
     = minimum(debt-service capacity, cash-flow capacity)
 ```
 
-The maximum EMI is converted to principal with the standard amortizing-loan present-value formula using the longest permitted term that satisfies the maximum age-at-maturity rule. The result is capped by the illustrative product maximum.
+The maximum EMI is converted to principal with the standard amortizing-loan present-value formula. The headline maximum uses the **selected term**, so it answers the same scenario the user entered. A distinct longest-age-eligible-term maximum is displayed only as an alternative. Both are capped by the illustrative product maximum.
+
+Optional assets never increase affordable EMI. Each asset is converted to adjusted emergency liquidity using a disclosed accessibility weight: cash 100%, fixed deposits 95%, debt funds 85%, gold 70%, listed equity 60%, property equity 25%, vehicle equity 10%, EPF/PPF 15%, and NPS 0%. Secured-asset equity is floored at zero when liabilities exceed value. Emergency coverage divides adjusted liquidity by post-loan monthly commitments.
+
+The Financial Foundation indicator weights pre-loan cash-flow strength (30 points), existing debt burden (20), essential expenses (15), emergency liquidity (25), and income stability (10). It is a planning aid—not a model score or lending decision.
+
+The rate-stress scenario increases the displayed personal-loan rate by 3 percentage points and secured-loan rates by 2 points. It reports the recalculated EMI and remaining cash; it does not change the base result. Home and vehicle journeys add illustrative LTV/down-payment guidance, while personal loans show the request as a multiple of monthly income.
 
 Each requested repayment plan is checked against:
 
@@ -103,11 +130,14 @@ Each requested repayment plan is checked against:
 - product maximum principal;
 - calculated affordable principal.
 
-Possible statuses are:
+Possible plan statuses are:
 
-- `ELIGIBLE`
-- `ELIGIBLE_FOR_LOWER_AMOUNT_OR_DIFFERENT_TERM`
-- `NOT_CURRENTLY_ELIGIBLE`
+- `SELECTED_PLAN_FITS`
+- `LONGER_TERM_REQUIRED`
+- `LOWER_AMOUNT_REQUIRED`
+- `LOWER_AMOUNT_AND_TERM_ADJUSTMENT`
+- `REQUEST_DOES_NOT_FIT_AVAILABLE_TERMS`
+- `BASIC_PRODUCT_REQUIREMENTS_NOT_MET`
 
 These describe the simulator outcome—not a bank approval or rejection.
 
@@ -115,9 +145,9 @@ These describe the simulator outcome—not a bank approval or rejection.
 
 The policies in `src/components/loan_simulator.py` are configuration examples rather than current market offers:
 
-- Personal Loan: 14% illustrative annual rate, 12–60 months, 40% total debt-service ceiling.
-- Vehicle Loan: 10% illustrative annual rate, 12–84 months, 45% ceiling.
-- Home Loan: 8.5% illustrative annual rate, 60–240 months, 50% ceiling.
+- Personal Loan: 12.75% illustrative annual rate, 12–60 months, 40% total debt-service ceiling.
+- Vehicle Loan: 8.5% illustrative annual rate, 12–84 months, 45% ceiling and 85% illustrative LTV guide.
+- Home Loan: 7.75% illustrative annual rate, 60–360 months, 50% ceiling and 80% illustrative LTV guide.
 
 Every policy also defines a residual-income buffer, income-stability requirement, age-at-maturity limit, and product amount ceiling. A real institution would replace these values with approved, version-controlled policies and validated pricing.
 
@@ -126,13 +156,15 @@ Every policy also defines a residual-income buffer, income-stability requirement
 The applicant view explains:
 
 - whether the requested structure fits the current inputs;
-- maximum simulated eligibility;
+- selected-term and longest-term capacity (clearly separated);
 - maximum affordable EMI;
-- readiness score and band;
-- post-EMI monthly surplus;
+- Loan Plan Fit and exact EMI gap;
+- Financial Foundation and emergency-coverage indicators;
+- cash remaining before and after the safety buffer;
 - alternative repayment terms;
 - total interest and repayment;
-- calculated steps to improve affordability.
+- calculated steps to make the requested structure fit;
+- product-specific LTV/down-payment or salary-multiple guidance.
 
 Recommendations are based on the actual shortfall. Examples include reducing the requested amount, lowering existing monthly debt, increasing stable verified income, improving expense headroom, building a longer income history, or selecting a different term.
 
@@ -142,9 +174,10 @@ The bank view exposes:
 
 - current and requested total debt-service ratios;
 - essential-expense ratio;
-- preferred-plan EMI;
+- requested-plan EMI, affordable EMI, and exact gap;
 - every policy rule, observed value, limit, and pass/fail result;
-- readiness-score component points;
+- Financial Foundation component points and disclosed asset-liquidity weights;
+- base and stressed repayment scenarios;
 - all product-policy assumptions.
 - the calibrated historical stress probability and band;
 - final-test ROC-AUC, PR-AUC, and Brier score;
@@ -172,7 +205,12 @@ Example request:
   "monthly_essential_expenses": 30000,
   "existing_monthly_debt_payments": 5000,
   "requested_loan_amount": 300000,
-  "preferred_term_months": 36
+  "preferred_term_months": 36,
+  "assets": {
+    "cash": 250000,
+    "fixed_deposit": 100000,
+    "nps": 500000
+  }
 }
 ```
 
@@ -184,7 +222,34 @@ Use `POST /simulate`. The response includes a `repayment_stress` object. If arti
 streamlit run app.py
 ```
 
-The guided form uses neutral currency units because no specific country, institution, or currency has been established.
+The professional multi-page experience includes Overview, Loan Affordability, Debt Payoff Planner, and Model Transparency journeys. INR, USD, and GBP are display choices only; changing the symbol does not alter calculations or assumptions.
+
+## Debt payoff API
+
+Use `POST /debt-repayment/simulate` with one to ten debts:
+
+```json
+{
+  "debts": [
+    {
+      "name": "Credit card",
+      "balance": 120000,
+      "annual_interest_rate_percent": 24,
+      "minimum_payment": 6000
+    },
+    {
+      "name": "Personal loan",
+      "balance": 240000,
+      "annual_interest_rate_percent": 12,
+      "minimum_payment": 8000
+    }
+  ],
+  "extra_monthly_payment": 5000,
+  "strategy": "avalanche"
+}
+```
+
+The API keeps the total submitted payment budget constant after a debt is cleared and rolls the freed payment into the next priority account.
 
 ## Historical ML research
 
@@ -204,7 +269,8 @@ The new form-aligned model is separately trained for the secondary repayment-str
 .
 ├── app.py                              # Applicant and decision-insights dashboards
 ├── api.py                              # Hybrid simulation API
-├── src/components/loan_simulator.py    # Affordability, score, plans, recommendations
+├── src/components/loan_simulator.py    # Affordability, resilience, stress, plans, guidance
+├── src/components/debt_repayment.py    # Avalanche/snowball payoff planning
 ├── src/components/repayment_stress.py  # Form-aligned ML inference and reason directions
 ├── src/components/feature_contract.py  # Historical ML application feature audit
 ├── src/pipeline/stress_training_pipeline.py
@@ -222,7 +288,7 @@ python -m pytest -q
 python -m pip check
 ```
 
-Tests cover EMI mathematics, principal recovery, eligibility, recommendations, deterministic outputs, form-to-training feature alignment, probability bands, reason codes, missing-artifact behavior, API validation, and the preserved ML research components.
+Tests cover EMI mathematics, principal recovery, Loan Plan Fit boundaries, selected-term caps, exact gaps, alternative terms, age limits, asset invariants and liquidity weights, emergency coverage, LTV, salary bands, rate stress, deterministic outputs, ML separation, API/domain consistency, and the preserved ML research components.
 
 ## What a real bank would still require
 
@@ -239,4 +305,4 @@ A production lending system would additionally require:
 - fairness, calibration, drift, stress, and outcome monitoring;
 - legal, compliance, model-risk, and independent validation approval.
 
-Eligibility in this project means only that submitted values satisfy displayed illustrative affordability rules.
+Plan fit in this project means only that submitted values satisfy displayed illustrative affordability rules.
